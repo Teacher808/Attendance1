@@ -8,7 +8,7 @@
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- React & ReactDOM (Development links for better error messages, can switch to production for deployment) -->
+    <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     
@@ -36,7 +36,7 @@
 
         const { useState, useEffect, useMemo } = React;
 
-        // --- SVG ICONS (Replaces lucide-react for standalone HTML compatibility) ---
+        // --- SVG ICONS ---
         const BookOpen = ({size=24, className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>;
         const Users = ({size=24, className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>;
         const UserCheck = ({size=24, className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><polyline points="16 11 18 13 22 9"></polyline></svg>;
@@ -136,7 +136,7 @@
                 // Auto-seed admin if Users collection is completely empty
                 if (colName === 'Users' && items.length === 0) {
                   const defaultAdmin = {
-                    id: 'admin123', username: 'admin', password: 'password', name: 'System Admin', role: 'admin', advisoryClassId: ''
+                    id: 'admin123', username: 'admin', password: 'password', name: 'System Admin', role: 'Administrator', advisoryClassId: ''
                   };
                   writeDoc('Users', defaultAdmin.id, defaultAdmin);
                 }
@@ -152,7 +152,7 @@
                 } else {
                   setErrorMsg(`Failed to sync ${colName} data.`);
                 }
-                setLoading(false); // CRITICAL: Stop the loading spinner even if there's an error
+                setLoading(false);
               });
               unsubs.push(unsub);
             });
@@ -223,7 +223,6 @@
             const password = formData.get('password');
             const role = formData.get('role');
             
-            // Check if username already exists
             if (dbData.Users.some(u => u.username === username)) {
               showError("Username already exists. Please choose another.");
               return;
@@ -235,7 +234,7 @@
             const success = await writeDoc('Users', id, newUser);
             if (success) {
               showSuccess("Account created successfully!");
-              setCurrentUser(newUser); // Auto-login after registration
+              setCurrentUser(newUser); 
               setView('dashboard');
             }
           };
@@ -245,7 +244,6 @@
             return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div></div>;
           }
 
-          // Handle Firebase Permission Errors Gracefully
           if (permissionError) {
             return (
               <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4 text-center">
@@ -356,7 +354,8 @@
           
           const DashboardView = () => {
             const today = new Date().toISOString().split('T')[0];
-            const todaysAttendance = dbData.Attendance.filter(a => a.date === today);
+            // Only count Daily (Advisory) attendance for official present count
+            const todaysAttendance = dbData.Attendance.filter(a => a.date === today && a.type === 'Daily');
             const presentCount = todaysAttendance.filter(a => a.status === 'Present').length;
             
             return (
@@ -366,7 +365,7 @@
                   <StatCard title="Total Classes" value={dbData.Classes.length} icon={<BookOpen size={24} className="text-indigo-600"/>} bg="bg-indigo-50" />
                   <StatCard title="Total Learners" value={dbData.Learners.length} icon={<Users size={24} className="text-blue-600"/>} bg="bg-blue-50" />
                   <StatCard title="Total Users" value={dbData.Users.length} icon={<UserCheck size={24} className="text-emerald-600"/>} bg="bg-emerald-50" />
-                  <StatCard title="Present Today" value={presentCount} subtitle={`${todaysAttendance.length} records today`} icon={<Check size={24} className="text-green-600"/>} bg="bg-green-50" />
+                  <StatCard title="Present Today" value={presentCount} subtitle={`Based on Daily records`} icon={<Check size={24} className="text-green-600"/>} bg="bg-green-50" />
                 </div>
               </div>
             );
@@ -379,7 +378,7 @@
               e.preventDefault();
               const form = new FormData(e.target);
               const name = form.get('name');
-              const teacherId = form.get('teacherId');
+              const teacherId = form.get('teacherId'); // This is the Adviser for the class
               const id = generateId();
               
               const success = await writeDoc('Classes', id, { id, name, teacherId });
@@ -407,10 +406,10 @@
                         <input name="name" required className="w-full px-4 py-2 border rounded-lg" placeholder="e.g. Grade 10 - Rizal" />
                       </div>
                       <div className="flex-1 w-full">
-                        <label className="block text-sm text-gray-600 mb-1">Teacher / Adviser</label>
+                        <label className="block text-sm text-gray-600 mb-1">Assign Adviser</label>
                         <select name="teacherId" className="w-full px-4 py-2 border rounded-lg bg-white">
-                          <option value="">Select Teacher...</option>
-                          {dbData.Users.filter(u => u.role !== 'student').map(u => (
+                          <option value="">Select Adviser...</option>
+                          {dbData.Users.filter(u => u.role === 'Adviser' || u.role === 'Administrator').map(u => (
                             <option key={u.id} value={u.id}>{u.name}</option>
                           ))}
                         </select>
@@ -427,7 +426,7 @@
                     <thead className="bg-gray-50 border-b border-gray-100 text-gray-600">
                       <tr>
                         <th className="p-4 font-medium">Class Name</th>
-                        <th className="p-4 font-medium">Adviser</th>
+                        <th className="p-4 font-medium">Assigned Adviser</th>
                         <th className="p-4 font-medium">Learners</th>
                         <th className="p-4 font-medium text-right">Actions</th>
                       </tr>
@@ -462,12 +461,14 @@
           const LearnersView = () => {
             const [selectedClass, setSelectedClass] = useState('');
             const [isAdding, setIsAdding] = useState(false);
+            const [isBulk, setIsBulk] = useState(false); // Toggle between single & bulk
+            const [bulkInput, setBulkInput] = useState('');
 
             const filteredLearners = selectedClass 
               ? dbData.Learners.filter(l => l.classId === selectedClass)
               : dbData.Learners;
 
-            const handleAdd = async (e) => {
+            const handleSingleAdd = async (e) => {
               e.preventDefault();
               const form = new FormData(e.target);
               const name = form.get('name');
@@ -479,6 +480,25 @@
                 showSuccess('Learner added successfully');
                 e.target.reset();
               }
+            };
+
+            const handleBulkAdd = async (e) => {
+              e.preventDefault();
+              const form = new FormData(e.target);
+              const classId = form.get('classId');
+              
+              const names = bulkInput.split('\n').map(n => n.trim()).filter(n => n.length > 0);
+              if (names.length === 0) return showError("Please enter at least one name.");
+              
+              const promises = names.map(name => {
+                 const id = generateId();
+                 return writeDoc('Learners', id, { id, name, classId });
+              });
+
+              await Promise.all(promises);
+              showSuccess(`Successfully enrolled ${names.length} learners!`);
+              setBulkInput('');
+              setIsAdding(false);
             };
 
             return (
@@ -495,31 +515,66 @@
                       <option value="">All Classes</option>
                       {dbData.Classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
-                    <button onClick={() => setIsAdding(!isAdding)} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center shadow-sm hover:bg-blue-700 whitespace-nowrap">
-                      {isAdding ? <X size={18} className="mr-2"/> : <Plus size={18} className="mr-2"/>}
-                      {isAdding ? 'Cancel' : 'Add'}
+                    <button onClick={() => { setIsAdding(!isAdding); setIsBulk(false); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center shadow-sm hover:bg-blue-700 whitespace-nowrap">
+                      {isAdding && !isBulk ? <X size={18} className="mr-2"/> : <Plus size={18} className="mr-2"/>}
+                      {isAdding && !isBulk ? 'Cancel' : 'Add'}
+                    </button>
+                    <button onClick={() => { setIsAdding(true); setIsBulk(true); }} className="bg-indigo-600 text-white px-4 py-2 rounded-lg flex items-center shadow-sm hover:bg-indigo-700 whitespace-nowrap">
+                       Bulk Add
                     </button>
                   </div>
                 </div>
 
                 {isAdding && (
                   <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                    <form onSubmit={handleAdd} className="flex flex-col md:flex-row gap-4 items-end">
-                      <div className="flex-1 w-full">
-                        <label className="block text-sm text-gray-600 mb-1">Full Name</label>
-                        <input name="name" required className="w-full px-4 py-2 border rounded-lg" placeholder="Lastname, Firstname" />
-                      </div>
-                      <div className="flex-1 w-full">
-                        <label className="block text-sm text-gray-600 mb-1">Class</label>
-                        <select name="classId" required className="w-full px-4 py-2 border rounded-lg bg-white">
-                          <option value="">Select Class...</option>
-                          {dbData.Classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                        </select>
-                      </div>
-                      <button type="submit" className="bg-emerald-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-emerald-700 h-10 w-full md:w-auto">
-                        Save Learner
-                      </button>
-                    </form>
+                    <div className="mb-4 pb-4 border-b border-gray-100 flex justify-between items-center">
+                      <h3 className="font-bold text-gray-800">{isBulk ? "Bulk Enroll Learners" : "Add Single Learner"}</h3>
+                      {isBulk && <button onClick={() => setIsAdding(false)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>}
+                    </div>
+
+                    {!isBulk ? (
+                      <form onSubmit={handleSingleAdd} className="flex flex-col md:flex-row gap-4 items-end">
+                        <div className="flex-1 w-full">
+                          <label className="block text-sm text-gray-600 mb-1">Full Name</label>
+                          <input name="name" required className="w-full px-4 py-2 border rounded-lg" placeholder="Lastname, Firstname" />
+                        </div>
+                        <div className="flex-1 w-full">
+                          <label className="block text-sm text-gray-600 mb-1">Class</label>
+                          <select name="classId" required className="w-full px-4 py-2 border rounded-lg bg-white">
+                            <option value="">Select Class...</option>
+                            {dbData.Classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                          </select>
+                        </div>
+                        <button type="submit" className="bg-emerald-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-emerald-700 h-10 w-full md:w-auto">
+                          Save Learner
+                        </button>
+                      </form>
+                    ) : (
+                      <form onSubmit={handleBulkAdd} className="space-y-4">
+                        <div>
+                          <label className="block text-sm text-gray-600 mb-1">Select Target Class</label>
+                          <select name="classId" required className="w-full px-4 py-2 border rounded-lg bg-white">
+                            <option value="">Select Class...</option>
+                            {dbData.Classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm text-gray-600 mb-1">Paste Learner Names (One name per line)</label>
+                          <textarea 
+                            value={bulkInput}
+                            onChange={(e) => setBulkInput(e.target.value)}
+                            required
+                            className="w-full px-4 py-2 border rounded-lg h-32 outline-none focus:ring-2 focus:ring-blue-500" 
+                            placeholder="Dela Cruz, Juan&#10;Santos, Maria&#10;Rizal, Jose"
+                          ></textarea>
+                        </div>
+                        <div className="flex justify-end">
+                          <button type="submit" className="bg-indigo-600 text-white px-8 py-2.5 rounded-lg font-medium hover:bg-indigo-700">
+                            Enroll All
+                          </button>
+                        </div>
+                      </form>
+                    )}
                   </div>
                 )}
 
@@ -560,7 +615,9 @@
             const today = new Date().toISOString().split('T')[0];
             const [date, setDate] = useState(today);
             const [selectedClass, setSelectedClass] = useState('');
-            const [subject, setSubject] = useState('All');
+            
+            const isSubjectTeacher = currentUser.role === 'Subject Teacher';
+            const [subject, setSubject] = useState(isSubjectTeacher ? '' : 'Advisory / Homeroom');
             
             // Derived state for the grid
             const classLearners = useMemo(() => {
@@ -576,26 +633,30 @@
               
               const newMap = {};
               classLearners.forEach(l => {
-                // Find existing record matching learner, date, and subject
-                const compositeId = `${l.id}_${date}_${subject.replace(/\s+/g, '')}`;
+                const searchSubject = subject || 'Advisory / Homeroom';
+                const compositeId = `${l.id}_${date}_${searchSubject.replace(/\s+/g, '')}`;
                 const existingRecord = dbData.Attendance.find(a => a.id === compositeId);
                 newMap[l.id] = existingRecord ? existingRecord.status : 'Present'; // Default present
               });
               setAttendanceMap(newMap);
             }, [selectedClass, date, subject, classLearners, dbData.Attendance]);
 
-            const handleSave = async () => {
+            const handleSave = async (e) => {
+              e.preventDefault(); // For required fields validation
               if (!selectedClass) return;
+              if (isSubjectTeacher && !subject) return showError("Subject is required.");
               
               let promises = classLearners.map(learner => {
-                const compositeId = `${learner.id}_${date}_${subject.replace(/\s+/g, '')}`;
+                const saveSubject = subject || 'Advisory / Homeroom';
+                const compositeId = `${learner.id}_${date}_${saveSubject.replace(/\s+/g, '')}`;
                 const record = {
                   id: compositeId,
                   learnerId: learner.id,
                   classId: selectedClass,
                   date: date,
-                  type: 'Daily',
-                  subject: subject,
+                  // Differentiate attendance type based on user role
+                  type: isSubjectTeacher ? 'Subject' : 'Daily',
+                  subject: saveSubject,
                   status: attendanceMap[learner.id]
                 };
                 return writeDoc('Attendance', compositeId, record);
@@ -623,23 +684,29 @@
               <div className="space-y-6">
                 <h2 className="text-2xl font-bold text-gray-800">Record Attendance</h2>
                 
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-wrap gap-4 items-end">
+                <form onSubmit={handleSave} className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-wrap gap-4 items-end">
                   <div className="flex-1 min-w-[200px]">
                     <label className="block text-sm text-gray-600 mb-1">Date</label>
-                    <input type="date" value={date} onChange={e => setDate(e.target.value)} className="w-full px-4 py-2 border rounded-lg outline-none focus:border-blue-500" />
+                    <input type="date" value={date} onChange={e => setDate(e.target.value)} required className="w-full px-4 py-2 border rounded-lg outline-none focus:border-blue-500" />
                   </div>
                   <div className="flex-1 min-w-[200px]">
-                    <label className="block text-sm text-gray-600 mb-1">Class</label>
-                    <select value={selectedClass} onChange={e => setSelectedClass(e.target.value)} className="w-full px-4 py-2 border rounded-lg bg-white outline-none focus:border-blue-500">
+                    <label className="block text-sm text-gray-600 mb-1">Select Section</label>
+                    <select value={selectedClass} onChange={e => setSelectedClass(e.target.value)} required className="w-full px-4 py-2 border rounded-lg bg-white outline-none focus:border-blue-500">
                       <option value="">Select Class...</option>
                       {dbData.Classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
                   <div className="flex-1 min-w-[200px]">
-                    <label className="block text-sm text-gray-600 mb-1">Subject (Optional)</label>
-                    <input type="text" value={subject} onChange={e => setSubject(e.target.value)} placeholder="e.g. Math, All" className="w-full px-4 py-2 border rounded-lg outline-none focus:border-blue-500" />
+                    <label className="block text-sm text-gray-600 mb-1">
+                      {isSubjectTeacher ? "Subject (Required)" : "Subject"}
+                    </label>
+                    {isSubjectTeacher ? (
+                      <input type="text" value={subject} onChange={e => setSubject(e.target.value)} required placeholder="e.g. Mathematics" className="w-full px-4 py-2 border rounded-lg outline-none focus:border-blue-500" />
+                    ) : (
+                      <input type="text" value={subject} readOnly disabled className="w-full px-4 py-2 border border-gray-200 bg-gray-50 text-gray-500 rounded-lg outline-none" />
+                    )}
                   </div>
-                </div>
+                </form>
 
                 {selectedClass && classLearners.length > 0 && (
                   <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
@@ -685,7 +752,7 @@
                 
                 {selectedClass && classLearners.length === 0 && (
                   <div className="p-8 text-center text-gray-500 bg-white rounded-xl border border-gray-100 shadow-sm">
-                    No learners found in this class. Please add learners first.
+                    No learners found in this class. Please ask the Administrator to enroll learners.
                   </div>
                 )}
               </div>
@@ -693,12 +760,14 @@
           };
 
           const ReportsView = () => {
-            // Generate the monthly/overall report logic from original app
+            // Generate the monthly/overall report logic
             const monthlyData = useMemo(() => {
               return dbData.Classes.map(c => {
                 const classLearners = dbData.Learners.filter(l => l.classId === c.id);
                 const enrolled = classLearners.length;
-                const classAtt = dbData.Attendance.filter(a => a.classId === c.id);
+                
+                // CRITICAL: We ONLY look at 'Daily' type attendance (taken by Adviser) to calculate ADA/PDA
+                const classAtt = dbData.Attendance.filter(a => a.classId === c.id && a.type === 'Daily');
                 
                 const uniqueDates = [...new Set(classAtt.map(a => a.date))];
                 const days = uniqueDates.length || 1;
@@ -716,7 +785,7 @@
             return (
               <div className="space-y-6">
                 <div className="flex justify-between items-center">
-                  <h2 className="text-2xl font-bold text-gray-800">Attendance Reports</h2>
+                  <h2 className="text-2xl font-bold text-gray-800">Analytics & Reports</h2>
                   <button className="text-blue-600 bg-blue-50 px-4 py-2 rounded-lg font-medium flex items-center hover:bg-blue-100">
                     <Download size={18} className="mr-2"/> Export CSV
                   </button>
@@ -748,6 +817,9 @@
                       ))}
                     </tbody>
                   </table>
+                  <div className="p-4 bg-gray-50 border-t border-gray-100 text-xs text-gray-500">
+                    * Analytics only factor in Official Daily Attendance logged by Advisers.
+                  </div>
                 </div>
               </div>
             );
@@ -780,10 +852,21 @@
                 
                 <nav className="flex-1 px-4 py-6 flex flex-col gap-2 overflow-y-auto">
                   <NavItem icon={<BarChart2 size={20} />} label="Dashboard" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
+                  
                   <NavItem icon={<Check size={20} />} label="Attendance" active={view === 'attendance'} onClick={() => setView('attendance')} />
-                  <NavItem icon={<BookOpen size={20} />} label="Classes" active={view === 'classes'} onClick={() => setView('classes')} />
-                  <NavItem icon={<Users size={20} />} label="Learners" active={view === 'learners'} onClick={() => setView('learners')} />
-                  <NavItem icon={<BarChart2 size={20} />} label="Reports" active={view === 'reports'} onClick={() => setView('reports')} />
+                  
+                  {/* Restrict Classes and Learners to Administrator Only */}
+                  {currentUser.role === 'Administrator' && (
+                    <React.Fragment>
+                      <NavItem icon={<BookOpen size={20} />} label="Classes" active={view === 'classes'} onClick={() => setView('classes')} />
+                      <NavItem icon={<Users size={20} />} label="Learners" active={view === 'learners'} onClick={() => setView('learners')} />
+                    </React.Fragment>
+                  )}
+
+                  {/* Restrict Reports to Administrator & Adviser Only */}
+                  {(currentUser.role === 'Administrator' || currentUser.role === 'Adviser') && (
+                     <NavItem icon={<BarChart2 size={20} />} label="Reports" active={view === 'reports'} onClick={() => setView('reports')} />
+                  )}
                 </nav>
 
                 <div className="p-4 border-t border-slate-800 bg-slate-950 flex items-center justify-between">
@@ -796,7 +879,7 @@
                       <p className="text-xs text-slate-400 capitalize">{currentUser.role}</p>
                     </div>
                   </div>
-                  <button onClick={() => setCurrentUser(null)} className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors">
+                  <button onClick={() => setCurrentUser(null)} className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors title='Log out'">
                     <LogOut size={18} />
                   </button>
                 </div>
@@ -806,10 +889,10 @@
               <main className="flex-1 p-4 md:p-8 overflow-y-auto h-screen relative">
                 <div className="max-w-6xl mx-auto pb-20">
                   {view === 'dashboard' && <DashboardView />}
-                  {view === 'classes' && <ClassesView />}
-                  {view === 'learners' && <LearnersView />}
+                  {view === 'classes' && currentUser.role === 'Administrator' && <ClassesView />}
+                  {view === 'learners' && currentUser.role === 'Administrator' && <LearnersView />}
                   {view === 'attendance' && <AttendanceView />}
-                  {view === 'reports' && <ReportsView />}
+                  {view === 'reports' && (currentUser.role === 'Administrator' || currentUser.role === 'Adviser') && <ReportsView />}
                 </div>
               </main>
             </div>
