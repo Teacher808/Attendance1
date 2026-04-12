@@ -65,8 +65,21 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        // Use environment appId if available on window, otherwise fallback to project id
         const envAppId = (typeof window !== 'undefined' && window.__app_id) ? window.__app_id : 'attendancetracker-a57eb';
+
+        // --- GLOBAL UTILITY ---
+        const downloadCSV = (rows, filename) => {
+          const csvContent = rows.map(e => e.join(",")).join("\n");
+          const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+          const link = document.createElement("a");
+          const url = URL.createObjectURL(blob);
+          link.setAttribute("href", url);
+          link.setAttribute("download", filename);
+          link.style.visibility = 'hidden';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        };
 
         function App() {
           // --- AUTH & DB STATE ---
@@ -80,8 +93,8 @@
           
           // --- APP STATE ---
           const [currentUser, setCurrentUser] = useState(null);
-          const [view, setView] = useState('login'); // login, dashboard, classes, learners, attendance, reports
-          const [authMode, setAuthMode] = useState('login'); // login, register
+          const [view, setView] = useState('login'); 
+          const [authMode, setAuthMode] = useState('login'); 
           const [loading, setLoading] = useState(true);
           const [errorMsg, setErrorMsg] = useState('');
           const [successMsg, setSuccessMsg] = useState('');
@@ -97,7 +110,7 @@
                   try {
                     await signInWithCustomToken(auth, initToken);
                   } catch (customTokenError) {
-                    console.warn("Custom token mismatch, falling back to anonymous sign-in:", customTokenError);
+                    console.warn("Custom token mismatch:", customTokenError);
                     await signInAnonymously(auth);
                   }
                 } else {
@@ -354,9 +367,16 @@
           
           const DashboardView = () => {
             const today = new Date().toISOString().split('T')[0];
-            // Only count Daily (Advisory) attendance for official present count
-            const todaysAttendance = dbData.Attendance.filter(a => a.date === today && a.type === 'Daily');
-            const presentCount = todaysAttendance.filter(a => a.status === 'Present').length;
+            
+            // Get all Daily attendance for today
+            const todaysDailyAttendance = dbData.Attendance.filter(a => a.date === today && a.type === 'Daily');
+            
+            // Find unique learners who were marked Present or Late in ANY of the time slots today
+            const presentLearnersToday = new Set(
+              todaysDailyAttendance
+                .filter(a => a.status === 'Present' || a.status === 'Late')
+                .map(a => a.learnerId)
+            );
             
             return (
               <div className="space-y-6">
@@ -365,7 +385,7 @@
                   <StatCard title="Total Classes" value={dbData.Classes.length} icon={<BookOpen size={24} className="text-indigo-600"/>} bg="bg-indigo-50" />
                   <StatCard title="Total Learners" value={dbData.Learners.length} icon={<Users size={24} className="text-blue-600"/>} bg="bg-blue-50" />
                   <StatCard title="Total Users" value={dbData.Users.length} icon={<UserCheck size={24} className="text-emerald-600"/>} bg="bg-emerald-50" />
-                  <StatCard title="Present Today" value={presentCount} subtitle={`Based on Daily records`} icon={<Check size={24} className="text-green-600"/>} bg="bg-green-50" />
+                  <StatCard title="Present Today" value={presentLearnersToday.size} subtitle={`Unique students present today`} icon={<Check size={24} className="text-green-600"/>} bg="bg-green-50" />
                 </div>
               </div>
             );
@@ -388,6 +408,12 @@
               }
             };
 
+            // Generate list of advisers who don't have a class assigned yet
+            const availableTeachers = dbData.Users.filter(u => 
+                u.role === 'Administrator' || 
+                (u.role === 'Adviser' && !dbData.Classes.some(c => c.teacherId === u.id))
+            );
+
             return (
               <div className="space-y-6">
                 <div className="flex justify-between items-center">
@@ -407,10 +433,10 @@
                       </div>
                       <div className="flex-1 w-full">
                         <label className="block text-sm text-gray-600 mb-1">Assign Adviser</label>
-                        <select name="teacherId" className="w-full px-4 py-2 border rounded-lg bg-white">
+                        <select name="teacherId" required className="w-full px-4 py-2 border rounded-lg bg-white">
                           <option value="">Select Adviser...</option>
-                          {dbData.Users.filter(u => u.role === 'Adviser' || u.role === 'Administrator').map(u => (
-                            <option key={u.id} value={u.id}>{u.name}</option>
+                          {availableTeachers.map(u => (
+                            <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
                           ))}
                         </select>
                       </div>
@@ -615,10 +641,22 @@
             const today = new Date().toISOString().split('T')[0];
             const [date, setDate] = useState(today);
             const [selectedClass, setSelectedClass] = useState('');
+            const [activeTab, setActiveTab] = useState('record'); // 'record' | 'summary'
             
-            const isSubjectTeacher = currentUser.role === 'Subject Teacher';
-            const [subject, setSubject] = useState(isSubjectTeacher ? '' : 'Advisory / Homeroom');
+            // Dynamic check for whether the current context is a Subject session or an Advisory session
+            const isSubjectSession = useMemo(() => {
+              if (!selectedClass) return currentUser.role === 'Subject Teacher';
+              if (currentUser.role === 'Administrator') return false; 
+              if (currentUser.role === 'Subject Teacher') return true;
+              
+              // If Adviser, check if this is THEIR assigned advisory class
+              const cls = dbData.Classes.find(c => c.id === selectedClass);
+              return cls?.teacherId !== currentUser.id;
+            }, [selectedClass, currentUser.role, currentUser.id, dbData.Classes]);
             
+            const [subject, setSubject] = useState('');
+            const [timeSlot, setTimeSlot] = useState('Morning In'); 
+
             // Derived state for the grid
             const classLearners = useMemo(() => {
               return dbData.Learners.filter(l => l.classId === selectedClass).sort((a, b) => a.name.localeCompare(b.name));
@@ -633,30 +671,39 @@
               
               const newMap = {};
               classLearners.forEach(l => {
-                const searchSubject = subject || 'Advisory / Homeroom';
-                const compositeId = `${l.id}_${date}_${searchSubject.replace(/\s+/g, '')}`;
+                let sessionIdentifier = isSubjectSession ? subject : timeSlot;
+                
+                // Strip all non-alphanumeric characters to prevent Firestore invalid path errors
+                const safeSession = sessionIdentifier ? sessionIdentifier.replace(/[^a-zA-Z0-9]/g, '') : '';
+                
+                // Including currentUser.id makes records totally separate for each user/teacher
+                const compositeId = `${l.id}_${date}_${safeSession}_${currentUser.id}`;
+                
                 const existingRecord = dbData.Attendance.find(a => a.id === compositeId);
                 newMap[l.id] = existingRecord ? existingRecord.status : 'Present'; // Default present
               });
               setAttendanceMap(newMap);
-            }, [selectedClass, date, subject, classLearners, dbData.Attendance]);
+            }, [selectedClass, date, subject, timeSlot, classLearners, dbData.Attendance, currentUser.id, isSubjectSession]);
 
             const handleSave = async (e) => {
-              e.preventDefault(); // For required fields validation
-              if (!selectedClass) return;
-              if (isSubjectTeacher && !subject) return showError("Subject is required.");
+              if (e && e.preventDefault) e.preventDefault(); // For required fields validation if called from form
+              if (!selectedClass) return showError("Please select a class first.");
+              if (isSubjectSession && !subject) return showError("Subject is required.");
               
               let promises = classLearners.map(learner => {
-                const saveSubject = subject || 'Advisory / Homeroom';
-                const compositeId = `${learner.id}_${date}_${saveSubject.replace(/\s+/g, '')}`;
+                let sessionIdentifier = isSubjectSession ? subject : timeSlot;
+                const safeSession = sessionIdentifier ? sessionIdentifier.replace(/[^a-zA-Z0-9]/g, '') : '';
+                const compositeId = `${learner.id}_${date}_${safeSession}_${currentUser.id}`;
+                
                 const record = {
                   id: compositeId,
                   learnerId: learner.id,
                   classId: selectedClass,
                   date: date,
-                  // Differentiate attendance type based on user role
-                  type: isSubjectTeacher ? 'Subject' : 'Daily',
-                  subject: saveSubject,
+                  // Differentiate attendance type based on session context
+                  type: isSubjectSession ? 'Subject' : 'Daily',
+                  subject: sessionIdentifier, // Save "Morning In" or actual Subject 
+                  teacherId: currentUser.id, // Keep track of the specific teacher who recorded it
                   status: attendanceMap[learner.id]
                 };
                 return writeDoc('Attendance', compositeId, record);
@@ -664,6 +711,7 @@
 
               await Promise.all(promises);
               showSuccess('Attendance saved successfully');
+              setActiveTab('summary'); // Automatically switch to the summary tab upon success
             };
 
             const toggleStatus = (learnerId) => {
@@ -680,10 +728,95 @@
               setAttendanceMap(newMap);
             };
 
+            // Calculate Summary Data for the current class & date
+            const summaryData = useMemo(() => {
+              if (!selectedClass) return [];
+              // Only pull records associated with the logged in user for accuracy based on their handled class
+              const records = dbData.Attendance.filter(a => a.classId === selectedClass && a.date === date && a.teacherId === currentUser.id);
+              const grouped = {};
+              
+              records.forEach(r => {
+                if (!grouped[r.subject]) {
+                  grouped[r.subject] = { present: 0, absent: 0, late: 0, type: r.type, absentStudents: [] };
+                }
+                if (r.status === 'Present') grouped[r.subject].present++;
+                else if (r.status === 'Absent') {
+                  grouped[r.subject].absent++;
+                  const student = dbData.Learners.find(l => l.id === r.learnerId);
+                  if (student) grouped[r.subject].absentStudents.push(student.name);
+                }
+                else if (r.status === 'Late') grouped[r.subject].late++;
+              });
+              
+              return Object.entries(grouped).map(([subj, counts]) => ({ subject: subj, ...counts }));
+            }, [selectedClass, date, dbData.Attendance, dbData.Learners, currentUser.id]);
+
+            // --- CSV EXPORT FUNCTIONS ---
+            const exportTodayCSV = () => {
+              if (!selectedClass) return;
+              const className = dbData.Classes.find(c => c.id === selectedClass)?.name || 'Class';
+              const headers = ['Date', 'Learner Name', 'Session / Subject', 'Status'];
+              const rows = [headers];
+              
+              const records = dbData.Attendance.filter(a => a.classId === selectedClass && a.date === date && a.teacherId === currentUser.id);
+              if(records.length === 0) return showError("No records to export for today.");
+              
+              records.forEach(r => {
+                 const learner = dbData.Learners.find(l => l.id === r.learnerId);
+                 rows.push([r.date, learner ? `"${learner.name}"` : 'Unknown', `"${r.subject}"`, r.status]);
+              });
+              downloadCSV(rows, `Attendance_${className.replace(/\s+/g, '_')}_${date}.csv`);
+            };
+
+            const exportAllTimeCSV = () => {
+              if (!selectedClass) return;
+              const className = dbData.Classes.find(c => c.id === selectedClass)?.name || 'Class';
+              const headers = ['Date', 'Learner Name', 'Session / Subject', 'Status'];
+              const rows = [headers];
+              
+              const records = dbData.Attendance
+                .filter(a => a.classId === selectedClass && a.teacherId === currentUser.id)
+                .sort((a, b) => new Date(b.date) - new Date(a.date));
+                
+              if(records.length === 0) return showError("No records to export.");
+              
+              records.forEach(r => {
+                 const learner = dbData.Learners.find(l => l.id === r.learnerId);
+                 rows.push([r.date, learner ? `"${learner.name}"` : 'Unknown', `"${r.subject}"`, r.status]);
+              });
+              downloadCSV(rows, `Full_Attendance_${className.replace(/\s+/g, '_')}.csv`);
+            };
+
             return (
               <div className="space-y-6">
-                <h2 className="text-2xl font-bold text-gray-800">Record Attendance</h2>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <h2 className="text-2xl font-bold text-gray-800">Record & View Attendance</h2>
+                    {selectedClass && (
+                      <span className={`px-3 py-1 rounded-full text-xs font-bold border ${isSubjectSession ? 'bg-purple-100 text-purple-700 border-purple-200' : 'bg-blue-100 text-blue-700 border-blue-200'}`}>
+                        {isSubjectSession ? "Subject Mode" : "Advisory Mode"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Sub-Navigation Tabs */}
+                <div className="flex border-b border-gray-200">
+                  <button 
+                    onClick={() => setActiveTab('record')} 
+                    className={`py-2 px-6 font-medium text-sm border-b-2 transition-colors ${activeTab === 'record' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                  >
+                    Record Attendance
+                  </button>
+                  <button 
+                    onClick={() => setActiveTab('summary')} 
+                    className={`py-2 px-6 font-medium text-sm border-b-2 transition-colors ${activeTab === 'summary' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                  >
+                    Section Summary
+                  </button>
+                </div>
                 
+                {/* Global Filters that apply to both tabs */}
                 <form onSubmit={handleSave} className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-wrap gap-4 items-end">
                   <div className="flex-1 min-w-[200px]">
                     <label className="block text-sm text-gray-600 mb-1">Date</label>
@@ -696,25 +829,34 @@
                       {dbData.Classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
-                  <div className="flex-1 min-w-[200px]">
-                    <label className="block text-sm text-gray-600 mb-1">
-                      {isSubjectTeacher ? "Subject (Required)" : "Subject"}
-                    </label>
-                    {isSubjectTeacher ? (
-                      <input type="text" value={subject} onChange={e => setSubject(e.target.value)} required placeholder="e.g. Mathematics" className="w-full px-4 py-2 border rounded-lg outline-none focus:border-blue-500" />
-                    ) : (
-                      <input type="text" value={subject} readOnly disabled className="w-full px-4 py-2 border border-gray-200 bg-gray-50 text-gray-500 rounded-lg outline-none" />
-                    )}
-                  </div>
+                  
+                  {activeTab === 'record' && (
+                    <div className="flex-1 min-w-[200px]">
+                      <label className="block text-sm text-gray-600 mb-1">
+                        {isSubjectSession ? "Subject (Required)" : "Time Slot"}
+                      </label>
+                      {isSubjectSession ? (
+                        <input type="text" value={subject} onChange={e => setSubject(e.target.value)} required placeholder="e.g. Mathematics" className="w-full px-4 py-2 border rounded-lg outline-none focus:border-blue-500" />
+                      ) : (
+                        <select value={timeSlot} onChange={e => setTimeSlot(e.target.value)} className="w-full px-4 py-2 border rounded-lg bg-white outline-none focus:border-blue-500">
+                          <option value="Morning In">Morning In</option>
+                          <option value="Morning Out">Morning Out</option>
+                          <option value="Afternoon In">Afternoon In</option>
+                          <option value="Afternoon Out">Afternoon Out</option>
+                        </select>
+                      )}
+                    </div>
+                  )}
                 </form>
 
-                {selectedClass && classLearners.length > 0 && (
+                {/* RECORD TAB CONTENT */}
+                {activeTab === 'record' && selectedClass && classLearners.length > 0 && (
                   <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
                     <div className="p-4 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
                       <span className="text-gray-600 font-medium">Learners ({classLearners.length})</span>
                       <div className="flex gap-2 text-sm">
-                        <button onClick={() => markAll('Present')} className="px-3 py-1 bg-green-100 text-green-700 rounded-md hover:bg-green-200 font-medium">All Present</button>
-                        <button onClick={() => markAll('Absent')} className="px-3 py-1 bg-red-100 text-red-700 rounded-md hover:bg-red-200 font-medium">All Absent</button>
+                        <button type="button" onClick={() => markAll('Present')} className="px-3 py-1 bg-green-100 text-green-700 rounded-md hover:bg-green-200 font-medium">All Present</button>
+                        <button type="button" onClick={() => markAll('Absent')} className="px-3 py-1 bg-red-100 text-red-700 rounded-md hover:bg-red-200 font-medium">All Absent</button>
                       </div>
                     </div>
                     
@@ -730,7 +872,7 @@
                         return (
                           <div key={learner.id} className="p-4 flex items-center justify-between hover:bg-gray-50 transition-colors">
                             <div className="font-medium text-gray-800">{learner.name}</div>
-                            <button 
+                            <button type="button" 
                               onClick={() => toggleStatus(learner.id)}
                               className={`px-6 py-2 rounded-full font-bold text-sm border shadow-sm w-28 transition-colors ${statusColors[status]}`}
                             >
@@ -750,11 +892,83 @@
                   </div>
                 )}
                 
-                {selectedClass && classLearners.length === 0 && (
+                {activeTab === 'record' && selectedClass && classLearners.length === 0 && (
                   <div className="p-8 text-center text-gray-500 bg-white rounded-xl border border-gray-100 shadow-sm">
                     No learners found in this class. Please ask the Administrator to enroll learners.
                   </div>
                 )}
+
+                {/* SUMMARY TAB CONTENT */}
+                {activeTab === 'summary' && selectedClass && (
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
+                      <h3 className="font-bold text-gray-700">Summary for {date}</h3>
+                      <div className="flex gap-2">
+                        <button onClick={exportTodayCSV} className="text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg font-medium flex items-center hover:bg-blue-100 text-sm transition-colors">
+                           <Download size={16} className="mr-2"/> Today's CSV
+                        </button>
+                        <button onClick={exportAllTimeCSV} className="text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg font-medium flex items-center hover:bg-indigo-100 text-sm transition-colors">
+                           <Download size={16} className="mr-2"/> All-Time CSV
+                        </button>
+                      </div>
+                    </div>
+
+                    {summaryData.length === 0 ? (
+                      <div className="p-8 text-center text-gray-500 bg-white rounded-xl border border-gray-100 shadow-sm">
+                        No attendance records found for this section on {date}.
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {summaryData.map(data => (
+                           <div key={data.subject} className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex flex-col hover:shadow-md transition-shadow">
+                              <div className="flex justify-between items-start mb-4">
+                                 <h4 className="font-bold text-gray-800 text-lg">{data.subject}</h4>
+                                 <span className={`px-2 py-1 rounded text-xs font-medium ${data.type === 'Subject' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
+                                   {data.type} Session
+                                 </span>
+                              </div>
+                              <div className="flex justify-between items-center mb-2">
+                                 <span className="text-gray-500 text-sm">Present:</span>
+                                 <span className="font-bold text-green-600">{data.present}</span>
+                              </div>
+                              <div className="flex justify-between items-center mb-2">
+                                 <span className="text-gray-500 text-sm">Absent:</span>
+                                 <span className="font-bold text-red-600">{data.absent}</span>
+                              </div>
+                              <div className="flex justify-between items-center">
+                                 <span className="text-gray-500 text-sm">Late:</span>
+                                 <span className="font-bold text-yellow-600">{data.late}</span>
+                              </div>
+                              
+                              {/* Absent Students List */}
+                              {data.absentStudents && data.absentStudents.length > 0 && (
+                                <div className="mt-4 pt-4 border-t border-gray-50">
+                                  <span className="text-xs font-bold text-red-500 uppercase tracking-wider block mb-2">Absent Students</span>
+                                  <ul className="text-sm text-gray-600 list-disc list-inside pl-1 space-y-1">
+                                    {data.absentStudents.map((name, i) => (
+                                      <li key={i} className="truncate" title={name}>{name}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              <div className="mt-4 pt-4 border-t border-gray-50 flex justify-between items-center mt-auto">
+                                 <span className="text-xs text-gray-400">Total Recorded</span>
+                                 <span className="text-sm font-medium text-gray-700">{data.present + data.absent + data.late} / {classLearners.length}</span>
+                              </div>
+                           </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                {activeTab === 'summary' && !selectedClass && (
+                  <div className="p-8 text-center text-gray-500 bg-white rounded-xl border border-gray-100 shadow-sm">
+                    Please select a section to view its daily summary.
+                  </div>
+                )}
+
               </div>
             );
           };
@@ -771,10 +985,24 @@
                 
                 const uniqueDates = [...new Set(classAtt.map(a => a.date))];
                 const days = uniqueDates.length || 1;
-                const presentCount = classAtt.filter(a => a.status === 'Present' || a.status === 'Late').length;
+                
+                let totalPresentStudentDays = 0;
+
+                // Accurately count a student as Present for the day if they had a Present/Late status
+                // at ANY of the 4 check-in slots (Morning In/Out, Afternoon In/Out) for that specific date.
+                uniqueDates.forEach(dateStr => {
+                  classLearners.forEach(learner => {
+                    const isPresent = classAtt.some(a => 
+                      a.learnerId === learner.id && 
+                      a.date === dateStr && 
+                      (a.status === 'Present' || a.status === 'Late')
+                    );
+                    if (isPresent) totalPresentStudentDays++;
+                  });
+                });
                 
                 // ADA (Average Daily Attendance)
-                const ada = (presentCount / days).toFixed(2);
+                const ada = (totalPresentStudentDays / days).toFixed(2);
                 // PDA (Percentage of Daily Attendance)
                 const pda = enrolled ? Math.round((ada / enrolled) * 100) : 0;
                 
@@ -782,11 +1010,20 @@
               });
             }, [dbData.Classes, dbData.Learners, dbData.Attendance]);
 
+            const exportReportsCSV = () => {
+              const headers = ['Class Name', 'Enrolled Learners', 'ADA (Average Daily Attendance)', 'PDA (Percentage)'];
+              const rows = [headers];
+              monthlyData.forEach(d => {
+                 rows.push([`"${d.className}"`, d.enrolled, d.ada, `"${d.pda}%"`]);
+              });
+              downloadCSV(rows, `Attendance_Analytics_Report.csv`);
+            };
+
             return (
               <div className="space-y-6">
                 <div className="flex justify-between items-center">
                   <h2 className="text-2xl font-bold text-gray-800">Analytics & Reports</h2>
-                  <button className="text-blue-600 bg-blue-50 px-4 py-2 rounded-lg font-medium flex items-center hover:bg-blue-100">
+                  <button onClick={exportReportsCSV} className="text-blue-600 bg-blue-50 px-4 py-2 rounded-lg font-medium flex items-center hover:bg-blue-100 transition-colors">
                     <Download size={18} className="mr-2"/> Export CSV
                   </button>
                 </div>
